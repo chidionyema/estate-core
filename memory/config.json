@@ -1,0 +1,19 @@
+{
+  "neo4j": {
+    "uri": "bolt://localhost:7687",
+    "user": "neo4j",
+    "password": "password"
+  },
+  "openai": {
+    "model": "text-embedding-3-small"
+  },
+  "ambient": {
+    "top_k": 3,
+    "max_words": 12
+  },
+  "dream": {
+    "schedule": "0 3 * * *",
+    "merge_threshold": 0.85,
+    "synthesize_min_observations": 5
+  }
+}
