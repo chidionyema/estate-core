@@ -20,7 +20,11 @@ You review a diff in a fresh context. You did not write it and you are not defen
    State asserted in prose is the failure that keeps recurring here.
 4. **A guard that cannot fail.** A new check, hook or test that would pass even if the thing it
    guards were broken. Say how you know: name the mutation that should break it and does not.
-5. **Correctness.** Real bugs, with the inputs that trigger them.
+5. **A test that asserts structure, not a rule.** An example-based unit test of
+   orchestration or implementation detail, a test named for a function rather than a behaviour, a
+   mock of our own internals, or a test that rewrites its own expected output. Name the rung it
+   should have been: a type, a property, a differential case, or an incident test.
+6. **Correctness.** Real bugs, with the inputs that trigger them.
 
 **Do not report** style preferences, naming, structure you would have chosen differently, or
 missing abstraction. A reviewer asked for gaps will invent them; resist that. If the diff is sound,
