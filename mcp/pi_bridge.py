@@ -41,14 +41,35 @@ DEFAULT_MODEL = "minimax/MiniMax-M3"
 RUN_LOG = os.path.expanduser(os.environ.get("PI_BRIDGE_RUN_LOG", "~/.claude/state/pi-bridge-runs.jsonl"))
 
 
-def log_run(row: dict) -> None:
+# The server is a long-lived process: Python reads this file once at start. Every session's
+# MCP server that started before a change to this file keeps running the old bytes, which is
+# how the run log stayed empty for a day after log_run landed (crew#533: five servers from
+# 26 Aug, log_run written 27 Aug). The row carries the code stamp so --runs can say which
+# servers are stale, and pi_execute prints a warning when the file on disk is newer than it.
+CODE_PATH = os.path.abspath(__file__)
+CODE_MTIME = os.path.getmtime(CODE_PATH) if os.path.exists(CODE_PATH) else 0.0
+
+
+def code_is_stale() -> bool:
+    try:
+        return os.path.getmtime(CODE_PATH) > CODE_MTIME + 1
+    except OSError:
+        return False
+
+
+def log_run(row: dict, path: str | None = None) -> bool:
+    """Append one row. Never silent: a failed write is one line on stderr (LAW 28)."""
+    path = path or RUN_LOG
     row = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **row}
     try:
-        os.makedirs(os.path.dirname(RUN_LOG), exist_ok=True)
-        with open(RUN_LOG, "a", encoding="utf-8") as fh:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row) + "\n")
-    except OSError:
-        pass
+        return True
+    except (OSError, TypeError, ValueError) as e:
+        sys.stderr.write(f"pi-bridge: run row NOT written to {path}: {type(e).__name__}: {e}\n")
+        sys.stderr.flush()
+        return False
 
 
 def runs_report(path: str = RUN_LOG) -> str:
@@ -266,23 +287,36 @@ def tool_pi_execute(a: dict) -> str:
         "=== PLAN ===\n" + plan
     )
 
+    # The row is written in `finally`, so it lands for every outcome: exit 0, non-zero,
+    # timeout, or an exception between launching pi and building the report.
+    row = {"kind": "execute", "model": model, "rc": None, "elapsed": None, "touched": 0,
+           "cwd": cwd, "timed_out": False, "head_moved": False, "error": None,
+           "code_mtime": int(CODE_MTIME)}
     t0 = time.time()
-    rc, out, err = run(argv, cwd, timeout_s)
-    elapsed = time.time() - t0
+    try:
+        rc, out, err = run(argv, cwd, timeout_s)
+        elapsed = time.time() - t0
+        row.update(rc=rc, elapsed=round(elapsed, 1), timed_out=rc == 124)
 
-    _, dirty_after, _ = git(cwd, "status", "--porcelain")
-    post = {ln[3:]: ln[:2] for ln in dirty_after.splitlines() if len(ln) > 3}
-    touched = sorted(p for p in post if p not in pre_dirty and not is_noise(p))
-    _, diffstat, _ = git(cwd, "diff", "--stat")
-    _, head_after, _ = git(cwd, "rev-parse", "HEAD")
+        _, dirty_after, _ = git(cwd, "status", "--porcelain")
+        post = {ln[3:]: ln[:2] for ln in dirty_after.splitlines() if len(ln) > 3}
+        touched = sorted(p for p in post if p not in pre_dirty and not is_noise(p))
+        _, diffstat, _ = git(cwd, "diff", "--stat")
+        _, head_after, _ = git(cwd, "rev-parse", "HEAD")
+        row.update(touched=len(touched), head_moved=head_before.strip() != head_after.strip())
+    except BaseException as e:
+        row.update(elapsed=round(time.time() - t0, 1), error=f"{type(e).__name__}: {e}")
+        raise
+    finally:
+        log_run(row)
 
-    log_run({"kind": "execute", "model": model, "rc": rc, "elapsed": round(elapsed, 1),
-             "touched": len(touched), "cwd": cwd, "timed_out": rc == 124,
-             "head_moved": head_before.strip() != head_after.strip()})
     parts = [
         f"executor: {model}   exit={rc}   elapsed={elapsed:.0f}s",
         f"cwd: {cwd}",
     ]
+    if code_is_stale():
+        parts.append("!! STALE SERVER — pi_bridge.py on disk is newer than this process. "
+                     "Restart the MCP server (/mcp) so the next run uses the current code.")
     if rc == 124:
         parts.append("!! TIMED OUT — the tree may be half-edited. Check the diff before continuing.")
     if head_before.strip() != head_after.strip():
