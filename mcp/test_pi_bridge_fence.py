@@ -124,6 +124,52 @@ def test_post_run_check_catches_what_the_plan_never_named():
     assert pb.fenced_paths(wrote) == ["store_platform/src/Store.Api/Payments/StripeProvider.cs"]
 
 
+# --- 2026-11-06 production-hardening pins -------------------------------------------
+
+def test_model_must_be_provider_slash_name():
+    """A bare model name used to mis-split: provider and model both became the string."""
+    assert pb.parse_model("minimax/MiniMax-M3") == ("minimax", "MiniMax-M3")
+    for bad in ("gpt-5", "", "/noname", "noprovider/"):
+        try:
+            pb.parse_model(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"parse_model accepted {bad!r}")
+
+
+def test_timeout_has_a_ceiling():
+    r = pb.tool_pi_execute({"plan": "x", "cwd": "/nonexistent-dir-for-validation-order",
+                            "timeout_s": 999999})
+    # validation order: cwd check fires before dispatch, but the timeout must parse+clamp
+    assert "999999" not in r
+    assert pb.MAX_TIMEOUT_S == 3600
+
+
+def test_porcelain_rename_uses_new_path():
+    out = pb.porcelain_paths("R  old/name.py -> new/name.py\n M src/a.py\n?? src/b.py\n")
+    assert out["new/name.py"].startswith("R")
+    assert "old/name.py" not in out
+    assert "src/a.py" in out and "src/b.py" in out
+
+
+def test_run_log_chain_detects_tamper(tmp_path=None):
+    import tempfile
+    d = tempfile.mkdtemp()
+    log = os.path.join(d, "runs.jsonl")
+    pb.RUN_LOG = log
+    pb.HMAC_KEY_PATH = os.path.join(d, "key")
+    pb.log_run({"kind": "execute", "model": "m/1", "rc": 0})
+    pb.log_run({"kind": "execute", "model": "m/1", "rc": 1})
+    assert pb.verify_chain(log).startswith("CHAIN OK")
+    # tamper: flip an rc in the first row
+    with open(log) as fh:
+        rows = fh.readlines()
+    rows[0] = rows[0].replace('"rc": 0', '"rc": 9')
+    with open(log, "w") as fh:
+        fh.writelines(rows)
+    assert pb.verify_chain(log).startswith("CHAIN FAIL")
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

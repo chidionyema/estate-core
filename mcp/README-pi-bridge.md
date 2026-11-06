@@ -1,7 +1,8 @@
 # pi-bridge — you prompt, Claude plans, MiniMax executes, Claude verifies
 
-Built 2026-08-06. Lets Claude Code hand mechanical implementation work to a cheap model
-(MiniMax-M3) while staying on your subscription, then verify the result itself.
+Built 2026-08-06. Hardened 2026-11-06 (launcher production program v2). Lets Claude Code
+hand mechanical implementation work to a cheap model (MiniMax-M3) while staying on your
+subscription, then verify the result itself.
 
 ---
 
@@ -59,21 +60,36 @@ default. That is what makes it cheap, and it is why the plan has to be self-cont
 | `pi_execute(plan, cwd, model?, timeout_s?, include_context_files?)` | Runs the plan through MiniMax. Returns the executor's report + `git diff --stat` + files newly touched. |
 | `pi_gate(cwd, commands, timeout_s?)` | Runs deterministic verification. Returns a verdict plus only the failing tail. |
 
-Defaults: `minimax/MiniMax-M3`, 900s timeout, context files **off**.
+Defaults: `minimax/MiniMax-M3`, 900s timeout (hard ceiling 3600s), context files **off**.
 
 ---
 
 ## Safety rails (enforced in the server, not in a prompt)
 
-- **Founder fence.** Any plan matching `pricing.py`, `bridge.py`, `store_platform/`,
-  `stripe`, `entitlement`, `migrations/`, `alembic`, `checkout`, `webhook` is **refused**.
-  Money rail / identity / contract / migrations never leave Claude Code.
+- **Founder fence, two tiers.** Plans naming the money rail itself — `pricing.py`,
+  `bridge.py`, `/Payments/`, `stripe`, `paddle`, `webhook`, `entitlement`, `PackPrice`,
+  `MoneyRail`, `/Auth/`, `/Identity/`, `/Contracts?/`, `migrations/`, `alembic` — are
+  **refused** outright (HARD). Money-ADJACENT surface — `checkout`, `/Endpoints?/`,
+  `fulfilment` — is dispatched, but the run report cannot be read without seeing it
+  (REVIEW). After the run, the fence checks the paths git says were actually written,
+  not just the prose plan — the plan can omit a target; git cannot.
 - **Git required.** It refuses to write to a non-git directory — the diff is the entire
   audit trail of what a non-interactive model did to your files.
+- **One run per working tree.** A second concurrent `pi_execute` in the same cwd is
+  refused instead of corrupting the dirty-file attribution.
+- **Timeout ceiling.** `timeout_s` is clamped to 3600s; an unbounded timeout cannot hold
+  a tree hostage.
+- **Model is validated.** `model` must be `provider/name`; a bare name errors instead of
+  dispatching to a provider nobody asked for.
+- **Tamper-evident run log.** Every run appends an HMAC-SHA256-chained row to the run
+  log (key at `~/.claude/state/pi-bridge-hmac-key`, 0600, outside the log). Verify with
+  `python3 pi_bridge.py --verify`. Deleting or rewriting history breaks the chain loudly.
 - **It reports honestly.** If the executor claims success but changed no files, or if HEAD
   moved because it committed, or if it timed out mid-edit, the result says so explicitly.
 - **Pre-existing dirty files are excluded** from "files newly touched", so a concurrent
-  session's work isn't misattributed to the executor.
+  session's work isn't misattributed to the executor. Renames attribute to the new path.
+- **The fence test is CI-enforced.** `.github/workflows/pi-bridge-fence.yml` runs
+  `mcp/test_pi_bridge_fence.py` on every PR and push to main.
 
 ---
 
@@ -100,8 +116,11 @@ Three findings, each measured, each of which looks like something else when it b
 | Path | Role |
 |---|---|
 | `~/.claude/mcp/pi_bridge.py` | The server |
+| `~/.claude/mcp/test_pi_bridge_fence.py` | Fence + hardening regression guard (CI-enforced) |
 | `~/.claude.json` → `mcpServers["pi-bridge"]` | Registration (user scope) |
 | `~/.claude/scripts/context-guard-hook.py` | `PEV_DIRECTIVE`, injected once per session |
+| `~/.claude/state/pi-bridge-runs.jsonl` | HMAC-chained run log |
+| `~/.claude/state/pi-bridge-hmac-key` | Chain key (0600, outside the log) |
 
 ## Turning it off
 
