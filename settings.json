@@ -106,14 +106,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 $HOME/.claude/scripts/hook-run.py $HOME/.claude/scripts/friction-relay.py"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
             "command": "python3 $HOME/.claude/scripts/hook-run.py $HOME/.claude/scripts/feed-guard.py SessionStart"
           }
         ]
